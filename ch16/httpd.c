@@ -69,9 +69,9 @@ static void not_found(struct HTTPRequest *req, FILE *out);
 static void output_common_header_fields(struct HTTPRequest *req, FILE *out, char *docroot);
 static struct FileInfo* get_fileinfo(char *docroot, char *path);
 static char* build_fspath(char *docroot, char *path);
-static void free_fileinfo(FileInfo *info);
+static void free_fileinfo(struct FileInfo *info);
 static char* guess_content_type(struct FileInfo *info);
-static voide* xmalloc(size_t sz);
+static void* xmalloc(size_t sz);
 static void log_exit(char *fmt, ...);
 
 
@@ -85,7 +85,7 @@ main(int argc, char *argv[])
     fprintf(stderr, "Usage: %s <docroot>\n", argv[0]);
     exit(1);
   }
-  install_signal_handler();
+  install_signal_handlers();
   service(stdin, stdout, argv[1]);
   exit(0);
 }
@@ -102,7 +102,7 @@ service(FILE *in, FILE *out, char *docroot)
 static struct HTTPRequest*
 read_request(FILE *in)
 {
-  struct HTTPReqest *req;
+  struct HTTPRequest *req;
   struct HTTPHeaderField *h;
 
   req = xmalloc(sizeof(struct HTTPRequest));
@@ -160,6 +160,7 @@ read_request_line(struct HTTPRequest *req, FILE *in)
   }
   p += strlen("HTTP/1.");
   req->protocol_minor_version = atoi(p);
+
 }
 
 static void
@@ -167,7 +168,7 @@ upcase(char *str)
 {
   char *p;
 
-  for(p = str; *p; P++){
+  for(p = str; *p; p++){
     *p = (char)toupper((int)*p);
   }
 }
@@ -180,7 +181,7 @@ read_header_field(FILE *in)
   char *p;
 
   if(!fgets(buf, LINE_BUF_SIZE, in)){
-    log_exit("failed to read request header field: %s", strerror(errorno));
+    log_exit("failed to read request header field: %s", strerror(errno));
   }
   if((buf[0] == '\n') || (strcmp(buf, "\r\n") == 0)){
       return NULL;
@@ -223,7 +224,7 @@ lookup_header_field_value(struct HTTPRequest *req, char *name)
 {
   struct HTTPHeaderField *h;
 
-  for(h = req->header, h; h->next){
+  for(h = req->header; h; h->next){
     if(strcasecmp(h->name, name) == 0){
       return h->value;
     }
@@ -235,7 +236,7 @@ lookup_header_field_value(struct HTTPRequest *req, char *name)
 static void
 free_request(struct HTTPRequest *req)
 {
-  struct HTTPRequestField *h, *head;
+  struct HTTPHeaderField *h, *head;
 
   head = req->header;
   while(head){
@@ -309,7 +310,7 @@ do_file_response(struct HTTPRequest *req, FILE *out, char *docroot)
 
   output_common_header_fields(req, out, "200 OK");
   fprintf(out, "Content-Length: %ld\r\n", info->size);
-  fprintf(out, "Content-Type: %s\r\n", guess_content_type(infO));
+  fprintf(out, "Content-Type: %s\r\n", guess_content_type(info));
   fprintf(out, "\r\n");
 
   if(strcmp(req->method, "HEAD") != 0){
@@ -360,10 +361,10 @@ output_common_header_fields(struct HTTPRequest *req, FILE *out, char *status)
 }
   
 static void
-methoc_not_allowed(struct HTTPRequet *req, FILE *out)
+method_not_allowed(struct HTTPRequest *req, FILE *out)
 {
   output_common_header_fields(req, out, "405 Method Not Allowed");
-  fprintf(out "Content-Type: text/html\r\n");
+  fprintf(out, "Content-Type: text/html\r\n");
   fprintf(out, "\r\n");
   fprintf(out, "<html>\r\n");
   fprintf(out, "<header>\r\n");
@@ -406,6 +407,19 @@ not_found(struct HTTPRequest *req, FILE *out)
     fprintf(out, "</html>\r\n");
   }
   fflush(out);
+}
+
+static void
+free_fileinfo(struct FileInfo *info)
+{
+  free(info->path);
+  free(info);
+}
+
+static char*
+guess_content_type(struct FileInfo *info)
+{
+  return "text/plain";
 }
 
 
