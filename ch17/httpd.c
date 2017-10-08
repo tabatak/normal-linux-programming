@@ -4,6 +4,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <netdb.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
@@ -11,6 +14,11 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <signal.h>
+#include <pwd.h>
+#include <grp.h>
+#include <syslog.h>
+#define _GNU_SOURCE
+#include <getopt.h>
 
 
 /** Constants **/
@@ -75,13 +83,18 @@ static char* build_fspath(char *docroot, char *path);
 static void free_fileinfo(struct FileInfo *info);
 static char* guess_content_type(struct FileInfo *info);
 static void* xmalloc(size_t sz);
-static void log_exit(char *fmt, ...);
+static void log_exit(const char *fmt, ...);
 static int listen_socket(char *port);
 static void server_main(int server_fd, char *docroot);
+static void detach_children(void);
+static void noop_handler(int sig);
+static void become_daemon(void);
+static void setup_environment(char *root, char *user, char *group);
+
 
 /** Functions **/
 
-#difine USAGE "Usage: %s [--port=n] [--chroot --user=u --group=g] <docroot>\n"
+#define USAGE "Usage: %s [--port=n] [--chroot --user=u --group=g] <docroot>\n"
 
 static int debug_mode = 0;
 
@@ -156,6 +169,7 @@ listen_socket(char *port)
 {
   struct addrinfo hints, *res, *ai;
   int err;
+  
   memset(&hints, 0, sizeof(struct addrinfo));
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
@@ -213,7 +227,86 @@ server_main(int server_fd, char *docroot)
     close(sock);
   }
 }
+
+static void
+setup_environment(char *root, char *user, char *group)
+{
+  struct passwd *pw;
+  struct group *gr;
+
+  if(!user || !group){
+    fprintf(stderr, "use both of --user and --group\n");
+    exit(1);
+  }
+  gr = getgrnam(group);
+  if(!gr){
+    fprintf(stderr, "no such group: %s\n", group);
+    exit(1);
+  }
+  if(setgid(gr->gr_gid) < 0){
+    perror("setgid(2)");
+    exit(1);
+  }
+  if(initgroups(user, gr->gr_gid) < 0){
+    perror("initgroups(2)");
+    exit(1);
+  }
+  pw = getpwnam(user);
+  if(!pw){
+    fprintf(stderr, "no such user: %s\n", user);
+    exit(1);
+  }
+
+  chroot(root);
+  if(setuid(pw->pw_uid) < 0){
+    perror("setuid(2)");
+    exit(1);
+  }
+}
+
+static void
+detach_children(void)
+{
+  struct sigaction act;
+
+  act.sa_handler = noop_handler;
+  sigemptyset(&act.sa_mask);
+  act.sa_flags = SA_RESTART | SA_NOCLDWAIT;
+  if(sigaction(SIGCHLD, &act, NULL) < 0){
+    log_exit("sigaction() failed: %s", strerror(errno));
+  }
+
+}
+
+static void
+noop_handler(int sig)
+{
+  ;
+}
       
+static void
+become_daemon(void)
+{
+  int n;
+
+  if(chdir("/") < 0){
+    log_exit("chdir(2) failed: %s", strerror(errno));
+  }
+
+  freopen("/dev/null", "r", stdin);
+  freopen("/dev/null", "w", stdout);
+  freopen("/dev/null", "w", stderr);
+  n = fork();
+  if(n < 0){
+    log_exit("fork(2) failed: %s", strerror(errno));
+  }
+  if(n != 0){
+    _exit(0);
+  }
+  if(setsid() < 0){
+    log_exit("setsid(2) failed: %s", strerror(errno));
+  }
+}
 
 static void
 service(FILE *in, FILE *out, char *docroot)
@@ -552,6 +645,7 @@ static void
 install_signal_handlers(void)
 {
   trap_signal(SIGPIPE, signal_exit);
+  detach_children();
 }
 
 static void
@@ -585,13 +679,20 @@ xmalloc(size_t sz)
 }
 
 static void
-log_exit(char *fmt, ...)
+log_exit(const char *fmt, ...)
 {
     va_list ap;
 
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
+
+    if(debug_mode){
+      
+      vfprintf(stderr, fmt, ap);
+      fputc('\n', stderr);
+    }else{
+      vsyslog(LOG_ERR, fmt, ap);
+    }
+    
     va_end(ap);
     exit(1);
 }
